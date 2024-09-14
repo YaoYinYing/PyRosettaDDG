@@ -1,0 +1,44 @@
+[build-system]
+requires = ["poetry-core>=1.0.0,<2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "pyrosetta_ddg"
+version = "0.0.1"
+description = "Run Cartesian ddG with PyRosetta 4.0."
+authors = ["Yinying Yao <yaoyy.hi@gmail.com>"]
+
+readme = "README.md"
+license = "GNU"
+repository = "https://github.com/YaoYinYing/PyRosettaDDG"
+classifiers = [
+    "Topic :: Scientific/Engineering :: Biochemistry",
+    "Topic :: Scientific/Engineering :: Protein Engineering"
+]
+
+packages = [
+    { include = "pyrosetta_ddg" },
+    { include = "pyrosetta_ddg/**/*.py" },
+]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<4.0.0"
+
+biopython = "^1.81"
+joblib = "^1.3.2"
+
+pyrosetta-installer="*"
+
+
+
+[tool.black]
+line-length = 79
+target-version = ['py38']
+skip-string-normalization = true
+
+include = '''
+/(
+  | REvoDesign
+)/
+'''
+
