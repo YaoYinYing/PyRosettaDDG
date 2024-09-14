@@ -1,4 +1,4 @@
-from ddg_parallel import DDG_Runner, mutant_parser,timing
+from pyrosetta_ddg.ddg_parallel import DDG_Runner, mutant_parser,timing
 
 pose_path =  "test/lowest_cart_relaxed_hg3.pdb"
 

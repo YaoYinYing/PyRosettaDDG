@@ -2,15 +2,14 @@ name: Unit pymol-test
 
 on:
   workflow_dispatch:
-  # push:
-  #   paths:
-  #     - '.CHANGELOG.md' 
-  #     - '.pyproject.toml' 
-  #     - 'REvoDesign/__version__.py'
-  #     - '.github/workflows/unit_tests_tag.yml'
+  push:
+    paths:
+      - 'pyrosetta_ddg/ddg_parallel.py' 
+      - '.pyproject.toml' 
+      - 'pyrosetta_ddg/test_ddg_parallel.py'
       
-  #   branches:
-  #     - main
+    branches:
+      - master
 
 env: 
   conda_env: PyRosettaDDG

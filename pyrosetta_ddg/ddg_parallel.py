@@ -1,6 +1,7 @@
 # modified from https://github.com/ccbiozhaw/FitLan/blob/main/rosetta_ddG_calculation/ddg.ipynb
 
 import contextlib
+import multiprocessing
 import time
 import random
 from typing import Optional, Union
@@ -272,7 +273,6 @@ def mutate_repack_func4(pose, mutant: Mutant, repack_radius, sfxn, ddg_bbnbrs=1,
 @dataclass
 class DDG_Runner:
     pdb_input: str
-    pose: Pose=None
     save_place: str='save'
     repack_radius: float =6
 
@@ -291,21 +291,21 @@ class DDG_Runner:
         if not 'serialization' in pyrosetta._version_string():
             raise ImportError(f'Please re-install PyRosetta with `serialization=True`\nimport pyrosetta_installer; pyrosetta_installer.install_pyrosetta(serialization=True, distributed=True, skip_if_installed=True)')
 
-        init("-default_max_cycles 200 -missing_density_to_jump -ex1 -ex2aro -ignore_zero_occupancy false -fa_max_dis 9 -mute all")
-        self.pose=pdb2pose(self.pdb_input)
+        
 
     def cart_ddg(self, mutant: Mutant, iteration: int=0 ) -> Mutant:
-        new_seed=self.seed if isinstance(self.seed, int) and self.seed >0 else random.randint(1,999999999)
+        new_seed=self.seed if isinstance(self.seed, int) and self.seed >0 else random.randint(-999999999,999999999)
+        
+
+        init(f"-default_max_cycles 200 -missing_density_to_jump -ex1 -ex2aro -ignore_zero_occupancy false -fa_max_dis 9 -unmute base")
+        pose=pdb2pose(self.pdb_input)
 
         seeding=basic.random.RandomGeneratorSettings()
-        seeding.use_time_as_seed(False)
-        seeding.seed(new_seed)
+
         
-        seed=seeding.seed()
-        
-        newpose = self.pose.clone()
+        newpose = pose.clone()
         scorefxn = create_score_function("ref2015_cart")
-        print(f'Mutate: {str(mutant)}: Iter. {iteration}, seed: {seed}')
+        print(f'Mutate: {str(mutant)}: Iter. {iteration}, seed: {new_seed}/{seeding.seed()}')
         newpose = mutate_repack_func4(newpose, mutant, self.repack_radius, scorefxn, verbose = self.verbose, cartesian = self.use_cartesian, save_pose_to=self.save_place, iteration=iteration)
         news = scorefxn(newpose)
         mutant_copy=mutant.copy
@@ -315,15 +315,18 @@ class DDG_Runner:
     
     def run_cart_ddg(self, mutants: list[Mutant]) ->list[Mutant]:
 
-        payload=[{'mutant':m, 'iteration': iteration} for m in mutants for iteration in range(self.repeat_times)]
+        payload=[(m, iteration) for m in mutants for iteration in range(self.repeat_times)]
         print(f'Payload Number: {len(payload)}')
         print(f'CPU in uses: {self.nproc}')
 
-        # loky backend fails on init of pyrosetta
-        results: list[Mutant] = Parallel(n_jobs=self.nproc, backend='multiprocessing', return_as='list', verbose=51)(
-                    delayed(self.cart_ddg)(**m)
-                    for m in payload
-                )
+        with multiprocessing.Pool(processes=self.nproc) as pool:
+            results = pool.starmap(self.cart_ddg,payload)
+
+        # # loky backend fails on init of pyrosetta
+        # results: list[Mutant] = Parallel(n_jobs=self.nproc, backend='multiprocessing', return_as='list', verbose=51)(
+        #             delayed(self.cart_ddg)(**m)
+        #             for m in payload
+        #         )
 
         print(results)
             
