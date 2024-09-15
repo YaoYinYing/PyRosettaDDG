@@ -1,3 +1,4 @@
+import os
 from pyrosetta_ddg.ddg_parallel import mutant_parser,timing, run_cart_ddg
 
 pose_path =  "test/lowest_cart_relaxed_hg3.pdb"
@@ -11,6 +12,6 @@ print(inputs_)
 
 
 with timing('Cartesian ddG'):
-    results=run_cart_ddg(pdb_file=pose_path,mutants=inputs_, save_place='save', nproc=32)
+    results=run_cart_ddg(pdb_file=pose_path,mutants=inputs_, save_place='save_init_delay', nproc=os.cpu_count())
 print(results)
 

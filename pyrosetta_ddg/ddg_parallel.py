@@ -267,16 +267,17 @@ def mutate_repack_func4(pose, mutant: Mutant, repack_radius, sfxn, ddg_bbnbrs=1,
         working_pose.dump_pdb(expected_pdb_save)
     return working_pose
 
-def setup_ddg_payload(pose: Pose,mutants: list[Mutant], repeat_times:int=3,save_to: str='save')-> list[tuple[Mutant, int]]:
-    payload=[(pose, m, iteration, save_to) for m in mutants for iteration in range(repeat_times)]
+def setup_ddg_payload(pdb_fp: str,mutants: list[Mutant], repeat_times:int=3,save_to: str='save')-> list[tuple[Mutant, int]]:
+    payload=[(pdb_fp, m, iteration, save_to) for m in mutants for iteration in range(repeat_times)]
     print(f'Payload Number: {len(payload)}')
     return payload
 
 
-def cart_ddg(pose:Pose, mutant: Mutant, iteration: int=0, save_place: str='save') -> Mutant:
+def cart_ddg(pdb_file:str, mutant: Mutant, iteration: int=0, save_place: str='save') -> Mutant:
+
+    init(f"-default_max_cycles 200 -missing_density_to_jump -ex1 -ex2aro -ignore_zero_occupancy false -fa_max_dis 9 -unmute base -random_delay 5")
     
-    
-    newpose = pose.clone()
+    newpose = pdb2pose(pdb_file)
     scorefxn = create_score_function("ref2015_cart")
     print(f'Mutate: {str(mutant)}: Iter. {iteration}')
     newpose = mutate_repack_func4(newpose, mutant, 6, scorefxn, verbose = False, cartesian = True, save_pose_to=save_place, iteration=iteration)
@@ -286,13 +287,11 @@ def cart_ddg(pose:Pose, mutant: Mutant, iteration: int=0, save_place: str='save'
     return mutant_copy
 
 def run_cart_ddg(pdb_file, mutants: list[Mutant], save_place, nproc: int=os.cpu_count()) ->list[Mutant]:
-    init(f"-default_max_cycles 200 -missing_density_to_jump -ex1 -ex2aro -ignore_zero_occupancy false -fa_max_dis 9 -unmute base")
     
-
         
     print(f'CPU in uses: {nproc}')
 
-    payload=setup_ddg_payload(pose=pdb2pose(pdb_file), repeat_times=3, mutants=mutants, save_to=save_place)
+    payload=setup_ddg_payload(pdb_fp=pdb_file, repeat_times=3, mutants=mutants, save_to=save_place)
     
 
     with multiprocessing.Pool(processes=nproc) as pool:
