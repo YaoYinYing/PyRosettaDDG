@@ -12,6 +12,6 @@ print(inputs_)
 
 
 with timing('Cartesian ddG'):
-    results=run_cart_ddg(pdb_file=pose_path,mutants=inputs_, save_place='save_init_delay', nproc=os.cpu_count())
+    results=run_cart_ddg(pdb_file=pose_path,mutants=inputs_, save_place='save_parallel-fix-parallel', nproc=os.cpu_count())
 print(results)
 

@@ -2,6 +2,7 @@
 
 import contextlib
 import multiprocessing
+import os
 import time
 import random
 from typing import Optional, Union
@@ -9,32 +10,34 @@ from dataclasses import dataclass
 
 from joblib import Parallel, delayed
 
+from pyrosetta import pose_from_file,create_score_function
 
-from pyrosetta.rosetta.core.pack.task import *
-from pyrosetta.rosetta.protocols import *
-from pyrosetta.rosetta.core.select import *
+from  pyrosetta.rosetta.core.pack.task import *
+from  pyrosetta.rosetta.core.select import *
 from pyrosetta.rosetta import core, protocols,basic
+from pyrosetta.rosetta.core.pose import Pose
 
+from pyrosetta import init
+from pyrosetta.io import pose_from_pdb
 
 
 #Python
-from pyrosetta import *
-from pyrosetta.rosetta import *
+
 
 
 #Core Includes
-from pyrosetta.rosetta.core.kinematics import MoveMap
-from pyrosetta.rosetta.core.kinematics import FoldTree
-from pyrosetta.rosetta.core.pack.task import TaskFactory
-from pyrosetta.rosetta.core.pack.task import operation
-from pyrosetta.rosetta.core.simple_metrics import metrics
-from pyrosetta.rosetta.core.select.residue_selector import (
+from  pyrosetta.rosetta.core.kinematics import MoveMap
+from  pyrosetta.rosetta.core.kinematics import FoldTree
+from  pyrosetta.rosetta.core.pack.task import TaskFactory
+from  pyrosetta.rosetta.core.pack.task import operation
+from  pyrosetta.rosetta.core.simple_metrics import metrics
+from  pyrosetta.rosetta.core.select.residue_selector import (
     ResidueIndexSelector, NotResidueSelector,
     NeighborhoodResidueSelector, PrimarySequenceNeighborhoodSelector,
     OrResidueSelector
 )
-from pyrosetta.rosetta.core import select
-from pyrosetta.rosetta.core.select.movemap import *
+from  pyrosetta.rosetta.core import select
+from  pyrosetta.rosetta.core.select.movemap import *
 
 #Protocol Includes
 from pyrosetta.rosetta.protocols import minimization_packing as pack_min
@@ -45,6 +48,11 @@ from pyrosetta.rosetta.protocols.loops import *
 
 from pyrosetta.toolbox import *
 
+def initialize_pyrosetta():
+    # Initialize PyRosetta once per process with unique random seed
+    seed = random.randint(1, 1000000)
+    init_options = f"-default_max_cycles 200 -missing_density_to_jump -ex1 -ex2aro -ignore_zero_occupancy false -fa_max_dis 9 -mute all -constant_seed -jran {seed}"
+    init(init_options)
 
 
 
@@ -128,9 +136,9 @@ def timing(msg: str):
 
 def mutate_repack_func4(pose, mutant: Mutant, repack_radius, sfxn, ddg_bbnbrs=1, verbose=False, cartesian=True, max_iter=None, save_pose_to: Optional[str]='save', iteration: Optional[int]=0) -> Pose:
     if cartesian:
-        sfxn.set_weight(pyrosetta.rosetta.core.scoring.ScoreTypeManager.score_type_from_name('cart_bonded'), 0.5)
+        sfxn.set_weight(core.scoring.ScoreTypeManager.score_type_from_name('cart_bonded'), 0.5)
         #sfxn.set_weight(atom_pair_constraint, 1)#0.5
-        sfxn.set_weight(pyrosetta.rosetta.core.scoring.ScoreTypeManager.score_type_from_name('pro_close'), 0)
+        sfxn.set_weight(core.scoring.ScoreTypeManager.score_type_from_name('pro_close'), 0)
         #logger.warning(pyrosetta.rosetta.basic.options.get_boolean_option('ex1'))#set_boolean_option( '-ex1', True )
         #pyrosetta.rosetta.basic.options.set_boolean_option( 'ex2', True )
         
@@ -144,7 +152,7 @@ def mutate_repack_func4(pose, mutant: Mutant, repack_radius, sfxn, ddg_bbnbrs=1,
         return pose_from_pdb(expected_pdb_save)
 
     
-    from pyrosetta.rosetta.core.pack.task import operation
+    from  pyrosetta.rosetta.core.pack.task import operation
     
     #Cloning of the pose including all settings
     working_pose = pose.clone()
@@ -166,7 +174,7 @@ def mutate_repack_func4(pose, mutant: Mutant, repack_radius, sfxn, ddg_bbnbrs=1,
     
 
     #Select all except mutant
-    all_nand_mutant_selector = pyrosetta.rosetta.core.select.residue_selector.NotResidueSelector()
+    all_nand_mutant_selector = core.select.residue_selector.NotResidueSelector()
     all_nand_mutant_selector.set_residue_selector(combined_mutant_selector)
 
     # Select neighbors within repack_radius
@@ -176,19 +184,19 @@ def mutate_repack_func4(pose, mutant: Mutant, repack_radius, sfxn, ddg_bbnbrs=1,
     nbr_or_mutant_selector.set_include_focus_in_subset(True)
 
     #Select mutant and it's sequence neighbors
-    seq_nbr_or_mutant_selector = pyrosetta.rosetta.core.select.residue_selector.PrimarySequenceNeighborhoodSelector(ddg_bbnbrs, ddg_bbnbrs, combined_mutant_selector, False)            
+    seq_nbr_or_mutant_selector = core.select.residue_selector.PrimarySequenceNeighborhoodSelector(ddg_bbnbrs, ddg_bbnbrs, combined_mutant_selector, False)            
 
     #Select mutant, it's seq neighbors and it's surrounding neighbors
-    seq_nbr_or_nbr_or_mutant_selector = pyrosetta.rosetta.core.select.residue_selector.OrResidueSelector()
+    seq_nbr_or_nbr_or_mutant_selector = core.select.residue_selector.OrResidueSelector()
     seq_nbr_or_nbr_or_mutant_selector.add_residue_selector(seq_nbr_or_mutant_selector)
     seq_nbr_or_nbr_or_mutant_selector.add_residue_selector(nbr_or_mutant_selector)    
 
     if verbose:
-        print(f'mutant_selector: {pyrosetta.rosetta.core.select.residue_selector.selection_positions(combined_mutant_selector.apply(working_pose))}')
-        print(f'all_nand_mutant_selector: {pyrosetta.rosetta.core.select.residue_selector.selection_positions(all_nand_mutant_selector.apply(working_pose))}')
-        print(f'nbr_or_mutant_selector: {pyrosetta.rosetta.core.select.residue_selector.selection_positions(nbr_or_mutant_selector.apply(working_pose))}')
-        print(f'seq_nbr_or_mutant_selector: {pyrosetta.rosetta.core.select.residue_selector.selection_positions(seq_nbr_or_mutant_selector.apply(working_pose))}')
-        print(f'seq_nbr_or_nbr_or_mutant_selector: {pyrosetta.rosetta.core.select.residue_selector.selection_positions(seq_nbr_or_nbr_or_mutant_selector.apply(working_pose))}')
+        print(f'mutant_selector: {core.select.residue_selector.selection_positions(combined_mutant_selector.apply(working_pose))}')
+        print(f'all_nand_mutant_selector: {core.select.residue_selector.selection_positions(all_nand_mutant_selector.apply(working_pose))}')
+        print(f'nbr_or_mutant_selector: {core.select.residue_selector.selection_positions(nbr_or_mutant_selector.apply(working_pose))}')
+        print(f'seq_nbr_or_mutant_selector: {core.select.residue_selector.selection_positions(seq_nbr_or_mutant_selector.apply(working_pose))}')
+        print(f'seq_nbr_or_nbr_or_mutant_selector: {core.select.residue_selector.selection_positions(seq_nbr_or_nbr_or_mutant_selector.apply(working_pose))}')
     
         
 
@@ -210,18 +218,18 @@ def mutate_repack_func4(pose, mutant: Mutant, repack_radius, sfxn, ddg_bbnbrs=1,
 
 
     #Apply packing of rotamers of mutant
-    packer = pyrosetta.rosetta.protocols.minimization_packing.PackRotamersMover()
+    packer =protocols.minimization_packing.PackRotamersMover()
     packer.score_function(sfxn)
     packer.task_factory(tf)
     if verbose:
-        logger.warning(tf.create_task_and_apply_taskoperations(working_pose))
+        print(tf.create_task_and_apply_taskoperations(working_pose))
     packer.apply(working_pose)
         
     #allow the movement for bb for the mutant + seq. neighbors, and sc for neigbor in range, seq. neighbor and mutant
-    movemap = pyrosetta.rosetta.core.select.movemap.MoveMapFactory()
+    movemap = core.select.movemap.MoveMapFactory()
     movemap.all_jumps(False)
-    movemap.add_bb_action(pyrosetta.rosetta.core.select.movemap.mm_enable, seq_nbr_or_mutant_selector)
-    movemap.add_chi_action(pyrosetta.rosetta.core.select.movemap.mm_enable, seq_nbr_or_nbr_or_mutant_selector)
+    movemap.add_bb_action(core.select.movemap.mm_enable, seq_nbr_or_mutant_selector)
+    movemap.add_chi_action(core.select.movemap.mm_enable, seq_nbr_or_nbr_or_mutant_selector)
     
     #for checking if all has been selected correctly
     #if verbose:
@@ -246,7 +254,7 @@ def mutate_repack_func4(pose, mutant: Mutant, repack_radius, sfxn, ddg_bbnbrs=1,
 
 
     #Perform a FastRelax
-    fastrelax = pyrosetta.rosetta.protocols.relax.FastRelax()
+    fastrelax =protocols.relax.FastRelax()
     fastrelax.set_scorefxn(sfxn)
     
     if cartesian:
@@ -275,7 +283,7 @@ def setup_ddg_payload(pdb_fp: str,mutants: list[Mutant], repeat_times:int=3,save
 
 def cart_ddg(pdb_file:str, mutant: Mutant, iteration: int=0, save_place: str='save') -> Mutant:
 
-    init(f"-default_max_cycles 200 -missing_density_to_jump -ex1 -ex2aro -ignore_zero_occupancy false -fa_max_dis 9 -unmute base -random_delay 5")
+    # init(f"-default_max_cycles 200 -missing_density_to_jump -ex1 -ex2aro -ignore_zero_occupancy false -fa_max_dis 9 -mute all -seed_offset {iteration}")
     
     newpose = pdb2pose(pdb_file)
     scorefxn = create_score_function("ref2015_cart")
@@ -294,7 +302,7 @@ def run_cart_ddg(pdb_file, mutants: list[Mutant], save_place, nproc: int=os.cpu_
     payload=setup_ddg_payload(pdb_fp=pdb_file, repeat_times=3, mutants=mutants, save_to=save_place)
     
 
-    with multiprocessing.Pool(processes=nproc) as pool:
+    with multiprocessing.Pool(processes=nproc, initializer=initialize_pyrosetta) as pool:
         results = pool.starmap(cart_ddg,payload)
 
     # # loky backend fails on init of pyrosetta
@@ -309,7 +317,9 @@ def run_cart_ddg(pdb_file, mutants: list[Mutant], save_place, nproc: int=os.cpu_
  
 
     
-    
+def file2pose(filepath: str) -> Pose:
+    return pose_from_file(filepath)
+
         
         
 
