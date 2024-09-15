@@ -8,7 +8,6 @@ import random
 from typing import Optional, Union
 from dataclasses import dataclass
 
-from joblib import Parallel, delayed
 
 from pyrosetta import pose_from_file,create_score_function
 
