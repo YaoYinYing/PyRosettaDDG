@@ -103,7 +103,7 @@ class Mutant:
     
 
     def __str__(self):
-        return self.id + f', Score: {self.scores if self.scores else ''}' 
+        return self.id + f', Score: {self.scores if self.scores else ""}' 
 
 
     @staticmethod
@@ -267,70 +267,50 @@ def mutate_repack_func4(pose, mutant: Mutant, repack_radius, sfxn, ddg_bbnbrs=1,
         working_pose.dump_pdb(expected_pdb_save)
     return working_pose
 
+def setup_ddg_payload(pose: Pose,mutants: list[Mutant], repeat_times:int=3,save_to: str='save')-> list[tuple[Mutant, int]]:
+    payload=[(pose, m, iteration, save_to) for m in mutants for iteration in range(repeat_times)]
+    print(f'Payload Number: {len(payload)}')
+    return payload
 
 
+def cart_ddg(pose:Pose, mutant: Mutant, iteration: int=0, save_place: str='save') -> Mutant:
+    
+    
+    newpose = pose.clone()
+    scorefxn = create_score_function("ref2015_cart")
+    print(f'Mutate: {str(mutant)}: Iter. {iteration}')
+    newpose = mutate_repack_func4(newpose, mutant, 6, scorefxn, verbose = False, cartesian = True, save_pose_to=save_place, iteration=iteration)
+    news = scorefxn(newpose)
+    mutant_copy=mutant.copy
+    mutant_copy.scores=[news]
+    return mutant_copy
 
-@dataclass
-class DDG_Runner:
-    pdb_input: str
-    save_place: str='save'
-    repack_radius: float =6
-
-    repeat_times: int= 3
-
-    verbose: bool=False
-    use_cartesian: bool=True
-
-    seed: int= None
-
-
-    nproc: int=os.cpu_count()
-
-
-    def __post_init__(self):
-        if not 'serialization' in pyrosetta._version_string():
-            raise ImportError(f'Please re-install PyRosetta with `serialization=True`\nimport pyrosetta_installer; pyrosetta_installer.install_pyrosetta(serialization=True, distributed=True, skip_if_installed=True)')
+def run_cart_ddg(pdb_file, mutants: list[Mutant], save_place, nproc: int=os.cpu_count()) ->list[Mutant]:
+    init(f"-default_max_cycles 200 -missing_density_to_jump -ex1 -ex2aro -ignore_zero_occupancy false -fa_max_dis 9 -unmute base")
+    
 
         
+    print(f'CPU in uses: {nproc}')
 
-    def cart_ddg(self, mutant: Mutant, iteration: int=0 ) -> Mutant:
-        new_seed=self.seed if isinstance(self.seed, int) and self.seed >0 else random.randint(-999999999,999999999)
+    payload=setup_ddg_payload(pose=pdb2pose(pdb_file), repeat_times=3, mutants=mutants, save_to=save_place)
+    
+
+    with multiprocessing.Pool(processes=nproc) as pool:
+        results = pool.starmap(cart_ddg,payload)
+
+    # # loky backend fails on init of pyrosetta
+    # results: list[Mutant] = Parallel(n_jobs=self.nproc, backend='multiprocessing', return_as='list', verbose=51)(
+    #             delayed(self.cart_ddg)(**m)
+    #             for m in payload
+    #         )
+
+    print(results)
         
-
-        init(f"-default_max_cycles 200 -missing_density_to_jump -ex1 -ex2aro -ignore_zero_occupancy false -fa_max_dis 9 -unmute base")
-        pose=pdb2pose(self.pdb_input)
-
-        seeding=basic.random.RandomGeneratorSettings()
-
-        
-        newpose = pose.clone()
-        scorefxn = create_score_function("ref2015_cart")
-        print(f'Mutate: {str(mutant)}: Iter. {iteration}, seed: {new_seed}/{seeding.seed()}')
-        newpose = mutate_repack_func4(newpose, mutant, self.repack_radius, scorefxn, verbose = self.verbose, cartesian = self.use_cartesian, save_pose_to=self.save_place, iteration=iteration)
-        news = scorefxn(newpose)
-        mutant_copy=mutant.copy
-        mutant_copy.scores=[news]
-        return mutant_copy
+    return [m.squash(mutants=[r for r in results if r.id==m.id]) for m in mutants]
+ 
 
     
-    def run_cart_ddg(self, mutants: list[Mutant]) ->list[Mutant]:
-
-        payload=[(m, iteration) for m in mutants for iteration in range(self.repeat_times)]
-        print(f'Payload Number: {len(payload)}')
-        print(f'CPU in uses: {self.nproc}')
-
-        with multiprocessing.Pool(processes=self.nproc) as pool:
-            results = pool.starmap(self.cart_ddg,payload)
-
-        # # loky backend fails on init of pyrosetta
-        # results: list[Mutant] = Parallel(n_jobs=self.nproc, backend='multiprocessing', return_as='list', verbose=51)(
-        #             delayed(self.cart_ddg)(**m)
-        #             for m in payload
-        #         )
-
-        print(results)
-            
-        return [m.squash(mutants=[r for r in results if r.id==m.id]) for m in mutants]
+    
         
         
 
