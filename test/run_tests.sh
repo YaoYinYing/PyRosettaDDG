@@ -1,1 +1,1 @@
-python pyrosetta_ddg/test_ddg_parallel.py
+python pyrosetta_ddg/test_cart_ddg.py
