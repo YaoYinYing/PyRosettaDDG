@@ -213,6 +213,7 @@ def setup_ddg_payload(
     print(f'Payload Number: {len(payload)}')
     return payload
 
+
 # https://forum.rosettacommons.org/node/11126
 def mutate_repack_func4(
     pose,
@@ -416,10 +417,10 @@ def mutate_repack_func4(
 
 
 def reseed() -> int:
-    
+
     options = pyrosetta.rosetta.basic.options.process()
     rgs = pyrosetta.rosetta.basic.random.RandomGeneratorSettings()
-    old_seed=pyrosetta.rosetta.basic.random.determine_random_number_seed(rgs)
+    old_seed = pyrosetta.rosetta.basic.random.determine_random_number_seed(rgs)
     rgs.initialize_from_options(options)
     new_seed = random.randint(0, 0xFFFFFF)
     pyrosetta.rosetta.basic.random.init_random_generators(
@@ -433,24 +434,10 @@ def reseed() -> int:
 class ddGRunner:
 
     pose_path: str
-    mutants: str
 
     save_to: str = 'save'
     repeat_times: int = 3
     nproc: int = os.cpu_count()
-
-    pose: Pose = None
-
-    def __post_init__(self):
-
-        self.inputs_mutants = tuple(
-            [m for m in mutant_parser(mutants_str=self.mutants)]
-        )
-        self.inputs_ = setup_ddg_payload(
-            mutants=self.inputs_mutants,
-            repeat_times=self.repeat_times,
-            save_to=self.save_to,
-        )
 
     def cart_ddg(self, p: DDGPayload) -> 'Mutant':
 
@@ -460,7 +447,7 @@ class ddGRunner:
         # deep_copy() is also clone()
         # https://graylab.jhu.edu/PyRosetta.documentation/pyrosetta.rosetta.core.pose.html#pyrosetta.rosetta.core.pose.Pose.detached_copy
         pose = pose_from_pdb(self.pose_path)
-        newpose = deep_copy(pose)
+        newpose = deep_copy(pose)  # a detached copy
 
         mutant = p.mutant
 
@@ -483,12 +470,18 @@ class ddGRunner:
         print(f'{str(mutant)}')
         return mutant
 
-    def run(self) -> list[Mutant]:
+    def run(self, mutants=str) -> list[Mutant]:
+        inputs_mutants = tuple([m for m in mutant_parser(mutants_str=mutants)])
+        inputs_ = setup_ddg_payload(
+            mutants=inputs_mutants,
+            repeat_times=self.repeat_times,
+            save_to=self.save_to,
+        )
+
         with timing('Cartesian ddG'):
             with multiprocessing.Pool(
-                processes=min(self.nproc, len(self.inputs_)),
-                initializer=reseed
+                processes=min(self.nproc, len(inputs_))#, initializer=reseed
             ) as pool:
-                results = pool.starmap(self.cart_ddg, self.inputs_)
+                results = pool.starmap(self.cart_ddg, inputs_)
 
         return results

@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'pyrosetta_ddg/ddg_parallel.py' 
+      - 'pyrosetta_ddg/cart_ddg.py' 
       - '.pyproject.toml' 
-      - 'pyrosetta_ddg/test_ddg_parallel.py'
+      - 'pyrosetta_ddg/test_cart_ddg.py'
       
     branches:
       - master
