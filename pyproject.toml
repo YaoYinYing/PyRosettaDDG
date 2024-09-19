@@ -28,6 +28,7 @@ biopython = "^1.81"
 joblib = "^1.3.2"
 
 pyrosetta-installer="*"
+pandas = "*"
 
 
 

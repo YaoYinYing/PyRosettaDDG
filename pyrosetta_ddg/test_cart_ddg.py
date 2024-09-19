@@ -1,14 +1,17 @@
 from pyrosetta_ddg.cart_ddg import ddGRunner
 
-
 def main():
     runner = ddGRunner(
         pose_path="test/1ubq.pdb",
-        save_to='save_runner_test-1',
+        save_to='save_runner',
+        
     )
     lm = runner.run(
         mutants='57A,54C,76A_32T',
     )
+
+    s=runner.summary(lm)
+    print(s)
 
 
 if __name__ == '__main__':

@@ -4,6 +4,7 @@ import multiprocessing
 import random
 import time
 from typing import Callable, Optional, Union
+import warnings
 import pyrosetta.io
 from pyrosetta.rosetta.core.pack.task import *
 from pyrosetta.rosetta.protocols import *
@@ -36,6 +37,7 @@ from pyrosetta.rosetta.protocols.antibody import *
 from pyrosetta.rosetta.protocols.loops import *
 from pyrosetta.rosetta.protocols.relax import FastRelax
 import numpy as np
+import pandas as pd
 
 from pyrosetta.toolbox import *
 
@@ -162,6 +164,19 @@ class Mutant:
                 for m in mut_str.split('_')
             ]
         )
+
+    @property
+    def asdataframe(self) -> pd.DataFrame:
+        if not self.scores:
+            raise ValueError("This mutant has no scores")
+        d = {'id': self.id}
+
+        # scores
+        d.update({f'iter_{i}': s for i, s in enumerate(self.scores)})
+
+        # summary
+        d.update({'mean': self.mean_score, 'std': self.std_score})
+        return pd.DataFrame(d, index=[0])
 
 
 @dataclass
@@ -416,18 +431,18 @@ def mutate_repack_func4(
     return working_pose
 
 
-def reseed() -> int:
+# def reseed() -> int:
 
-    options = pyrosetta.rosetta.basic.options.process()
-    rgs = pyrosetta.rosetta.basic.random.RandomGeneratorSettings()
-    old_seed = pyrosetta.rosetta.basic.random.determine_random_number_seed(rgs)
-    rgs.initialize_from_options(options)
-    new_seed = random.randint(0, 0xFFFFFF)
-    pyrosetta.rosetta.basic.random.init_random_generators(
-        new_seed, rgs.rng_type()
-    )
-    print(f'Seed: {old_seed} -> {new_seed}')
-    return new_seed
+#     options = pyrosetta.rosetta.basic.options.process()
+#     rgs = pyrosetta.rosetta.basic.random.RandomGeneratorSettings()
+#     old_seed = pyrosetta.rosetta.basic.random.determine_random_number_seed(rgs)
+#     rgs.initialize_from_options(options)
+#     new_seed = random.randint(0, 0xFFFFFF)
+#     pyrosetta.rosetta.basic.random.init_random_generators(
+#         new_seed, rgs.rng_type()
+#     )
+#     print(f'Seed: {old_seed} -> {new_seed}')
+#     return new_seed
 
 
 @dataclass
@@ -438,7 +453,20 @@ class ddGRunner:
     save_to: str = 'save'
     repeat_times: int = 3
     nproc: int = os.cpu_count()
+    repack_radius: int = 6
 
+    verbose: bool = False
+    relax_max_iter: Optional[int] = None
+
+    def __post_init__(self):
+        if 'serialization' in pyrosetta.version():
+            warnings.warn(
+                RuntimeWarning(
+                    'ddGRunner does not require serialization build of PyRosetta.'
+                )
+            )
+
+    # BUG: every run returns the exact same results.
     def cart_ddg(self, p: DDGPayload) -> 'Mutant':
 
         scores = []
@@ -454,13 +482,14 @@ class ddGRunner:
         for i in range(p.iterations):
             scorefxn = create_score_function("ref2015_cart")
             newpose = mutate_repack_func4(
-                newpose,
-                p.mutant,
-                6,
-                scorefxn,
+                pose=newpose,
+                mutant=p.mutant,
+                repack_radius=self.repack_radius,
+                sfxn=scorefxn,
                 verbose=False,
                 cartesian=True,
                 save_pose_to=p.save_pose_to_pdb(i),
+                max_iter=self.relax_max_iter,
             )
             news = scorefxn(newpose)
             print(f'{mutant.id}.{i}: {news}')
@@ -480,8 +509,13 @@ class ddGRunner:
 
         with timing('Cartesian ddG'):
             with multiprocessing.Pool(
-                processes=min(self.nproc, len(inputs_))#, initializer=reseed
+                processes=min(self.nproc, len(inputs_))  # , initializer=reseed
             ) as pool:
                 results = pool.starmap(self.cart_ddg, inputs_)
 
         return results
+
+    @staticmethod
+    def summary(lm: list[Mutant]) -> pd.DataFrame:
+        return pd.concat([m.asdataframe for m in lm], axis=0)
+        
