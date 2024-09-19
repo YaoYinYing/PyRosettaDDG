@@ -2,7 +2,7 @@ from pyrosetta_ddg.cart_ddg import ddGRunner
 
 def main():
     runner = ddGRunner(
-        pose_path="test/1ubq.pdb",
+        pdb_path="test/1ubq.pdb",
         save_to='save_runner',
         
     )

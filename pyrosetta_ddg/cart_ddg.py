@@ -448,7 +448,7 @@ def mutate_repack_func4(
 @dataclass
 class ddGRunner:
 
-    pose_path: str
+    pdb_path: str
 
     save_to: str = 'save'
     repeat_times: int = 3
@@ -474,7 +474,7 @@ class ddGRunner:
         # clone() is a shadow copy not a real deep copy.
         # deep_copy() is also clone()
         # https://graylab.jhu.edu/PyRosetta.documentation/pyrosetta.rosetta.core.pose.html#pyrosetta.rosetta.core.pose.Pose.detached_copy
-        pose = pose_from_pdb(self.pose_path)
+        pose = pose_from_pdb(self.pdb_path)
         newpose = deep_copy(pose)  # a detached copy
 
         mutant = p.mutant
