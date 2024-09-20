@@ -3,8 +3,10 @@ from dataclasses import dataclass, asdict, field
 import multiprocessing
 import random
 import time
-from typing import Callable, Optional, Union
-import warnings
+import copy
+from typing import Callable, Literal, Optional, Union
+
+
 import pyrosetta.io
 from pyrosetta.rosetta.core.pack.task import *
 from pyrosetta.rosetta.protocols import *
@@ -41,6 +43,20 @@ import pandas as pd
 
 from pyrosetta.toolbox import *
 
+import dask
+import pyrosetta.distributed.dask
+import pyrosetta.distributed.io as io
+import pyrosetta.distributed.packed_pose as packed_pose
+import pyrosetta.distributed.tasks.rosetta_scripts as rosetta_scripts
+import pyrosetta.distributed.tasks.score as score
+
+from dask_jobqueue import SLURMCluster
+from dask.distributed import (
+    Client,
+    LocalCluster,
+
+)
+
 DDG_INIT_FLAGS = "-default_max_cycles 200 -missing_density_to_jump -ex1 -ex2aro -ignore_zero_occupancy false -fa_max_dis 9 -mute all"
 
 init(DDG_INIT_FLAGS)
@@ -71,18 +87,15 @@ class Mutation:
         if isinstance(self.pos, str) and self.pos.isdigit():
             self.pos = int(self.pos)
 
-    def __str__(self):
+    @property
+    def id(self):
         return f"{self.pos}{self.aa}"
 
 
 @dataclass
 class Mutant:
     mutations: list[Mutation]
-
-    saved_pose: dict[int, str] = field(default_factory=dict)
     saved_score: dict[int, float] = field(default_factory=dict)
-
-    pdb_path: Optional[tuple[str]] = None
 
     @property
     def scores(self) -> tuple[float]:
@@ -95,7 +108,7 @@ class Mutant:
     @property
     def id(self) -> str:
         return (
-            "_".join(str(m) for m in self.mutations)
+            "_".join(m.id for m in self.mutations)
             if self.mutations
             else 'WT'
         )
@@ -139,7 +152,8 @@ class Mutant:
 
     @property
     def copy(self):
-        return Mutant(**asdict(self))
+
+        return copy.deepcopy(self)
 
     @property
     def all_pos(self) -> list[int]:
@@ -179,17 +193,11 @@ class Mutant:
         return pd.DataFrame(d, index=[0])
 
 
-@dataclass
+@dataclass(frozen=True)
 class DDGPayload:
     mutant: Mutant
-    save_poses_to_pdb: Union[list[str], None]
-
-    @property
-    def iterations(self) -> int:
-        return len(self.save_poses_to_pdb)
-
-    def save_pose_to_pdb(self, i: int) -> Union[str, None]:
-        return self.save_poses_to_pdb[i] if self.save_poses_to_pdb else None
+    idx: int
+    save_pose_to_pdb: str
 
 
 def mutant_parser(mutants_str: str, use_wt: bool = True) -> list[Mutant]:
@@ -206,27 +214,26 @@ def mutant_parser(mutants_str: str, use_wt: bool = True) -> list[Mutant]:
     return lm
 
 
+
 def setup_ddg_payload(
     mutants: list[Mutant], repeat_times: int = 3, save_to: Optional[str] = None
 ) -> list[DDGPayload]:
     payload = [
-        (
-            DDGPayload(
-                m,
-                [
-                    (
-                        os.path.join(save_to, f'{m.id}.i.{i}.pdb')
-                        if save_to is not None
-                        else None
-                    )
-                    for i in range(repeat_times)
-                ],
+        DDGPayload(
+            m,
+            i,
+            (
+                os.path.join(save_to, f'{m.id}.i.{i}.pdb')
+                if save_to is not None
+                else None
             ),
         )
+        for i in range(repeat_times)
         for m in mutants
     ]
     print(f'Payload Number: {len(payload)}')
-    return payload
+    
+    return random.sample(payload,len(payload))
 
 
 # https://forum.rosettacommons.org/node/11126
@@ -264,10 +271,10 @@ def mutate_repack_func4(
 
     if save_pose_to and os.path.isfile(save_pose_to):
         print(f'Recover saved pose from pdb: {save_pose_to}')
-        return pose_from_pdb(save_pose_to)
+        return io.to_packed(io.pose_from_file(save_pose_to))
 
     # Cloning of the pose including all settings
-    working_pose = pose.clone()
+    working_pose = io.to_pose(deep_copy(pose))
 
     # Create residue selectors for mutations
     mutant_selectors = []
@@ -383,10 +390,9 @@ def mutate_repack_func4(
     )
 
     # for checking if all has been selected correctly
-    # if verbose:
-    mm = movemap.create_movemap_from_pose(working_pose)
-
-    logger.info(mm)
+    if verbose:
+        mm = movemap.create_movemap_from_pose(working_pose)
+        print(mm)
 
     # Generate a TaskFactory
     tf = TaskFactory()
@@ -428,21 +434,187 @@ def mutate_repack_func4(
     if save_pose_to:
         os.makedirs(os.path.dirname(save_pose_to), exist_ok=True)
         working_pose.dump_pdb(save_pose_to)
+        working_pose = io.to_packed(working_pose)
     return working_pose
 
 
-# def reseed() -> int:
+@contextlib.contextmanager
+def create_local_cluster(
+    cluster_type: Literal['slurm', 'local'] = 'local', **kwargs
+):
 
-#     options = pyrosetta.rosetta.basic.options.process()
-#     rgs = pyrosetta.rosetta.basic.random.RandomGeneratorSettings()
-#     old_seed = pyrosetta.rosetta.basic.random.determine_random_number_seed(rgs)
-#     rgs.initialize_from_options(options)
-#     new_seed = random.randint(0, 0xFFFFFF)
-#     pyrosetta.rosetta.basic.random.init_random_generators(
-#         new_seed, rgs.rng_type()
-#     )
-#     print(f'Seed: {old_seed} -> {new_seed}')
-#     return new_seed
+    def pop_kwarg(k: str, default=None):
+        if k in kwargs:
+            return kwargs.pop(k)
+        else:
+            return default
+
+    if cluster_type == 'slurm':
+        cluster = SLURMCluster(
+            n_workers=pop_kwarg('n_workers', 1),
+            cores=pop_kwarg('cores', 1),
+            processes=pop_kwarg('processes', 1),
+            job_cpu=pop_kwarg('job_cpu', 1),
+            memory=pop_kwarg('memory', "3GB"),
+            queue=pop_kwarg('queue', "short"),
+            walltime=pop_kwarg('walltime', "02:59:00"),
+            local_directory=pop_kwarg('local_directory', "./job"),
+            extra=pyrosetta.distributed.dask.worker_extra(
+                init_flags=DDG_INIT_FLAGS
+            ),
+        )
+    elif cluster_type == 'local':
+        cluster = LocalCluster(
+            n_workers=pop_kwarg('n_workers', 1),
+            threads_per_worker=1,
+            # extra=pyrosetta.distributed.dask.worker_extra(init_flags=DDG_INIT_FLAGS)
+        )
+    client = Client(cluster)
+    yield client
+    client.close()
+    cluster.close()
+
+
+def process_with_cluster(
+    func: Callable,
+    inputs: list = None,
+    nstruct: Optional[int] = None,
+    client: Optional[Client] = None,
+    **kwargs,
+):
+    print(f'{inputs=}')
+    print(f'{nstruct=}')
+    print(f'{kwargs=}')
+
+    if isinstance(client, Client):
+        if isinstance(nstruct, int):
+            nstruct_tasks = [client.submit(func) for i in nstruct]
+            return [task.result() for task in nstruct_tasks]
+        if isinstance(inputs, (list, tuple, set)):
+            nstruct_tasks = [client.submit(func, i) for i in inputs]
+            return [task.result() for task in nstruct_tasks]
+
+
+    if isinstance(nstruct, int):
+        results = [dask.delayed(func)(i) for i in range(nstruct)]
+    else:
+        results = [dask.delayed(func)(i) for i in inputs]
+
+    # https://docs.dask.org/en/latest/delayed-best-practices.html#compute-on-lots-of-computation-at-once
+    return dask.compute(*results)
+
+
+@dataclass
+class ddGRelaxer:
+    pdb_path: str
+    save_to: str = 'relaxed'
+
+    nstruct: int = 20
+    nproc: int = os.cpu_count()
+
+    relax_max_recycle: Optional[int] = 5
+    relax_max_iter: Optional[int] = None
+
+    lowest_score: Optional[float] = None
+    lowest_delta_score: Optional[float] = None
+
+    _init_score: float = None
+    _pdb_prefix: str = None
+    use_slurm: bool = False
+
+    def __post_init__(self):
+        os.makedirs(self.save_to, exist_ok=True)
+        self._pdb_prefix = os.path.basename(self.pdb_path)[:-4]
+        from pyrosetta.toolbox import cleanATOM
+
+        cleaned_pdb_path = os.path.join(
+            self.save_to, f'{self._pdb_prefix}.cleaned.pdb'
+        )
+        cleanATOM(self.pdb_path, cleaned_pdb_path)
+
+        self.pdb_path = cleaned_pdb_path
+
+        scorefxn = create_score_function("ref2015_cart")
+        pose = pose_from_pdb(self.pdb_path)
+
+        self._init_score = scorefxn(pose)
+        if isinstance(self.lowest_delta_score, (float, int)):
+            self.lowest_score = self._init_score + self.lowest_delta_score
+
+    def satisfied_energy(self, score: float) -> bool:
+        if not self.lowest_score:
+            return False
+        return score < self.lowest_score
+
+    def _relax(self, struct_label: int) -> dict[str, Union[str, int, float]]:
+        pose = io.pose_from_file(self.pdb_path)
+        pose_relax = io.to_pose(pose)
+        scorefxn = create_score_function("ref2015_cart")
+
+        for i in range(self.relax_max_recycle):
+            relaxed_path = os.path.join(
+                self.save_to,
+                f'{self._pdb_prefix}.relax.{struct_label:>03}.r{i:>03}.pdb',
+            )
+            if os.path.isfile(relaxed_path):
+                pose_relax = io.to_packed(io.pose_from_file(relaxed_path))
+                print(
+                    f'[{struct_label}] Recover packed decoy from: {relaxed_path}'
+                )
+
+            else:
+
+                relax = pyrosetta.rosetta.protocols.relax.FastRelax()
+                relax.set_scorefxn(scorefxn)
+
+                relax.cartesian(True)
+                if self.relax_max_iter:
+                    relax.max_iter(self.relax_max_iter)
+                relax.apply(pose_relax)
+
+                pose_relax.dump_pdb(relaxed_path)
+
+            # save and return the pdb file
+            if (
+                self.satisfied_energy(
+                    score := scorefxn(io.to_pose(pose_relax))
+                )
+                or i == self.relax_max_recycle - 1
+            ):
+                pose_relax = io.to_packed(pose_relax)
+                return {
+                    'decoy': relaxed_path,
+                    'score': score,
+                    'score_before ': self._init_score,
+                    'struc_label': struct_label,
+                }
+            pose_relax = io.to_pose(pose_relax)
+
+    def run(self):
+
+        with timing('Cartesian ddG Relax'), create_local_cluster(
+            cluster_type='slurm' if self.use_slurm else 'local',
+            n_workers=min(self.nproc, self.nstruct),
+        ) as client:
+
+            results = process_with_cluster(
+                self._relax, [i for i in range(self.nstruct)], client=client
+            )
+            # with multiprocessing.Pool(
+            #     processes=min(self.nproc, self.nstruct)  # , initializer=reseed
+            # ) as pool:
+            #     results = pool.map(self._relax, [i for i in range(self.nstruct)])
+            print(results)
+
+            return results
+
+    @staticmethod
+    def summary(results: list[dict]) -> pd.DataFrame:
+        return pd.DataFrame(results)
+    
+    @staticmethod
+    def pick_the_best(df: pd.DataFrame) -> str:
+        return df.loc[df['score'].idxmin()]['decoy']
 
 
 @dataclass
@@ -458,45 +630,34 @@ class ddGRunner:
     verbose: bool = False
     relax_max_iter: Optional[int] = None
 
-    def __post_init__(self):
-        if 'serialization' in pyrosetta.version():
-            warnings.warn(
-                RuntimeWarning(
-                    'ddGRunner does not require serialization build of PyRosetta.'
-                )
-            )
+    use_slurm: bool = False
 
     # BUG: every run returns the exact same results.
     def cart_ddg(self, p: DDGPayload) -> 'Mutant':
 
-        scores = []
-
         # clone() is a shadow copy not a real deep copy.
         # deep_copy() is also clone()
         # https://graylab.jhu.edu/PyRosetta.documentation/pyrosetta.rosetta.core.pose.html#pyrosetta.rosetta.core.pose.Pose.detached_copy
-        pose = pose_from_pdb(self.pdb_path)
-        newpose = deep_copy(pose)  # a detached copy
+        pose = io.pose_from_file(self.pdb_path)
+        newpose = io.to_pose(pose)  
 
-        mutant = p.mutant
+        mutant = p.mutant.copy
+        
+        scorefxn = create_score_function("ref2015_cart")
+        newpose = mutate_repack_func4(
+            pose=newpose,
+            mutant=p.mutant,
+            repack_radius=self.repack_radius,
+            sfxn=scorefxn,
+            verbose=False,
+            cartesian=True,
+            save_pose_to=p.save_pose_to_pdb,
+            max_iter=self.relax_max_iter,
+        )
+        news = scorefxn(io.to_pose(newpose))
+        print(f'{mutant.id}.{p.idx}: {news}')
 
-        for i in range(p.iterations):
-            scorefxn = create_score_function("ref2015_cart")
-            newpose = mutate_repack_func4(
-                pose=newpose,
-                mutant=p.mutant,
-                repack_radius=self.repack_radius,
-                sfxn=scorefxn,
-                verbose=False,
-                cartesian=True,
-                save_pose_to=p.save_pose_to_pdb(i),
-                max_iter=self.relax_max_iter,
-            )
-            news = scorefxn(newpose)
-            print(f'{mutant.id}.{i}: {news}')
-            scores.append(news)
-
-        mutant.scores = scores
-        print(f'{str(mutant)}')
+        mutant.scores = [news]
         return mutant
 
     def run(self, mutants=str) -> list[Mutant]:
@@ -507,15 +668,16 @@ class ddGRunner:
             save_to=self.save_to,
         )
 
-        with timing('Cartesian ddG'):
-            with multiprocessing.Pool(
-                processes=min(self.nproc, len(inputs_))  # , initializer=reseed
-            ) as pool:
-                results = pool.starmap(self.cart_ddg, inputs_)
+        with timing('Cartesian ddG'), create_local_cluster(
+            cluster_type='slurm' if self.use_slurm else 'local',
+            n_workers=min(self.nproc, len(inputs_)),
+        ) as client:
+
+            results: list[Mutant] = process_with_cluster(self.cart_ddg, inputs=inputs_, client=client)
+            results = [m.squash([r for r in results if r.id == m.id]) for m in inputs_mutants]
 
         return results
 
     @staticmethod
     def summary(lm: list[Mutant]) -> pd.DataFrame:
         return pd.concat([m.asdataframe for m in lm], axis=0)
-        

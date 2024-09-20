@@ -1,9 +1,9 @@
-from pyrosetta_ddg.cart_ddg import ddGRunner
+from pyrosetta_ddg import ddGRunner
 
 def main():
     runner = ddGRunner(
         pdb_path="test/1ubq.pdb",
-        save_to='save_runner',
+        save_to='save_runner_client',
         
     )
     lm = runner.run(
