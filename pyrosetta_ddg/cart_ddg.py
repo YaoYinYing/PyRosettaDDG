@@ -1,5 +1,6 @@
 import contextlib
 from dataclasses import dataclass, asdict, field
+from abc import ABC
 import multiprocessing
 import random
 import time
@@ -54,7 +55,6 @@ from dask_jobqueue import SLURMCluster
 from dask.distributed import (
     Client,
     LocalCluster,
-
 )
 
 DDG_INIT_FLAGS = "-default_max_cycles 200 -missing_density_to_jump -ex1 -ex2aro -ignore_zero_occupancy false -fa_max_dis 9 -mute all"
@@ -65,7 +65,7 @@ init(DDG_INIT_FLAGS)
 # a full deep copy of the src pose obj.
 def deep_copy(pose: Pose) -> Pose:
     p = Pose()
-    p.detached_copy(pose)
+    p.assign(pose)
     return p
 
 
@@ -108,9 +108,7 @@ class Mutant:
     @property
     def id(self) -> str:
         return (
-            "_".join(m.id for m in self.mutations)
-            if self.mutations
-            else 'WT'
+            "_".join(m.id for m in self.mutations) if self.mutations else 'WT'
         )
 
     def squash(
@@ -193,11 +191,27 @@ class Mutant:
         return pd.DataFrame(d, index=[0])
 
 
+class DDGPayloadBase: ...
+
+
 @dataclass(frozen=True)
-class DDGPayload:
+class DDGPayloadOne(DDGPayloadBase):
     mutant: Mutant
     idx: int
     save_pose_to_pdb: str
+
+
+@dataclass
+class DDGPayloadBatch(DDGPayloadBase):
+    mutant: Mutant
+    save_poses_to_pdb: Union[list[str], None]
+
+    @property
+    def iterations(self) -> int:
+        return len(self.save_poses_to_pdb)
+
+    def save_pose_to_pdb(self, i: int) -> Union[str, None]:
+        return self.save_poses_to_pdb[i] if self.save_poses_to_pdb else None
 
 
 def mutant_parser(mutants_str: str, use_wt: bool = True) -> list[Mutant]:
@@ -214,26 +228,44 @@ def mutant_parser(mutants_str: str, use_wt: bool = True) -> list[Mutant]:
     return lm
 
 
-
 def setup_ddg_payload(
-    mutants: list[Mutant], repeat_times: int = 3, save_to: Optional[str] = None
-) -> list[DDGPayload]:
-    payload = [
-        DDGPayload(
-            m,
-            i,
-            (
-                os.path.join(save_to, f'{m.id}.i.{i}.pdb')
-                if save_to is not None
-                else None
-            ),
-        )
-        for i in range(repeat_times)
-        for m in mutants
-    ]
+    mutants: list[Mutant],
+    repeat_times: int = 3,
+    save_to: Optional[str] = None,
+    use_batch: bool = False,
+) -> list[Union[DDGPayloadOne, DDGPayloadBatch]]:
+    if use_batch:
+        payload = [
+            DDGPayloadBatch(
+                m,
+                [
+                    (
+                        os.path.join(save_to, f'{m.id}.i.{i}.pdb')
+                        if save_to is not None
+                        else None
+                    )
+                    for i in range(repeat_times)
+                ],
+            )
+            for m in mutants
+        ]
+    else:
+        payload = [
+            DDGPayloadOne(
+                m,
+                i,
+                (
+                    os.path.join(save_to, f'{m.id}.i.{i}.pdb')
+                    if save_to is not None
+                    else None
+                ),
+            )
+            for i in range(repeat_times)
+            for m in mutants
+        ]
     print(f'Payload Number: {len(payload)}')
-    
-    return random.sample(payload,len(payload))
+    print(f'{payload=}')
+    return payload
 
 
 # https://forum.rosettacommons.org/node/11126
@@ -274,7 +306,7 @@ def mutate_repack_func4(
         return io.to_packed(io.pose_from_file(save_pose_to))
 
     # Cloning of the pose including all settings
-    working_pose = io.to_pose(deep_copy(pose))
+    working_pose = io.to_pose(pose)
 
     # Create residue selectors for mutations
     mutant_selectors = []
@@ -494,7 +526,6 @@ def process_with_cluster(
             nstruct_tasks = [client.submit(func, i) for i in inputs]
             return [task.result() for task in nstruct_tasks]
 
-
     if isinstance(nstruct, int):
         results = [dask.delayed(func)(i) for i in range(nstruct)]
     else:
@@ -611,7 +642,7 @@ class ddGRelaxer:
     @staticmethod
     def summary(results: list[dict]) -> pd.DataFrame:
         return pd.DataFrame(results)
-    
+
     @staticmethod
     def pick_the_best(df: pd.DataFrame) -> str:
         return df.loc[df['score'].idxmin()]['decoy']
@@ -631,18 +662,48 @@ class ddGRunner:
     relax_max_iter: Optional[int] = None
 
     use_slurm: bool = False
+    use_batch: bool = True
+
+    def cart_ddg_batch(self, p: DDGPayloadBatch):
+        packed = io.pose_from_file(self.pdb_path)
+        pose = io.to_pose(packed)
+
+        scores = []
+        # BUG: a new pose object must be cloned before called
+        newpose = deep_copy(pose)
+
+        mutant = p.mutant
+
+        for i in range(p.iterations):
+            scorefxn = create_score_function("ref2015_cart")
+            newpose = mutate_repack_func4(
+                newpose,
+                p.mutant,
+                6,
+                scorefxn,
+                verbose=False,
+                cartesian=True,
+                save_pose_to=p.save_pose_to_pdb(i),
+            )
+            news = scorefxn(io.to_pose(newpose))
+            print(f'{mutant.id}.{i}: {news}')
+            scores.append(news)
+
+        mutant.scores = scores
+        print(f'{str(mutant)}')
+        return mutant
 
     # BUG: every run returns the exact same results.
-    def cart_ddg(self, p: DDGPayload) -> 'Mutant':
+    def cart_ddg_one(self, p: DDGPayloadOne) -> 'Mutant':
 
         # clone() is a shadow copy not a real deep copy.
         # deep_copy() is also clone()
         # https://graylab.jhu.edu/PyRosetta.documentation/pyrosetta.rosetta.core.pose.html#pyrosetta.rosetta.core.pose.Pose.detached_copy
         pose = io.pose_from_file(self.pdb_path)
-        newpose = io.to_pose(pose)  
+        newpose = io.to_pose(deep_copy(io.to_pose(pose)))
 
         mutant = p.mutant.copy
-        
+
         scorefxn = create_score_function("ref2015_cart")
         newpose = mutate_repack_func4(
             pose=newpose,
@@ -666,6 +727,7 @@ class ddGRunner:
             mutants=inputs_mutants,
             repeat_times=self.repeat_times,
             save_to=self.save_to,
+            use_batch=self.use_batch,
         )
 
         with timing('Cartesian ddG'), create_local_cluster(
@@ -673,8 +735,20 @@ class ddGRunner:
             n_workers=min(self.nproc, len(inputs_)),
         ) as client:
 
-            results: list[Mutant] = process_with_cluster(self.cart_ddg, inputs=inputs_, client=client)
-            results = [m.squash([r for r in results if r.id == m.id]) for m in inputs_mutants]
+            results: list[Mutant] = process_with_cluster(
+                (
+                    self.cart_ddg_one
+                    if not self.use_batch
+                    else self.cart_ddg_batch
+                ),
+                inputs=inputs_,
+                client=client,
+            )
+            if not self.use_batch:
+                results = [
+                    m.squash([r for r in results if r.id == m.id])
+                    for m in inputs_mutants
+                ]
 
         return results
 

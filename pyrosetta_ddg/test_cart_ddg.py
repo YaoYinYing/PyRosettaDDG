@@ -3,7 +3,8 @@ from pyrosetta_ddg import ddGRunner
 def main():
     runner = ddGRunner(
         pdb_path="test/1ubq.pdb",
-        save_to='save_runner_client',
+        save_to='save_runner_client_usebatch',
+        use_batch=True
         
     )
     lm = runner.run(
